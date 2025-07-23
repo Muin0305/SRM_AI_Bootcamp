@@ -1,1 +1,12 @@
 streamlit>=1.26.0
+
+
+pandas
+
+plotly
+
+category_encoders
+
+scikit-learn
+
+numpy
