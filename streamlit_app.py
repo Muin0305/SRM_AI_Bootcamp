@@ -5,7 +5,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import TargetEncoding
+from sklearn.preprocessing import TargetEncoder
 import plotly.express as px
 
 
