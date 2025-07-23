@@ -14,5 +14,5 @@ st.set_page_config(page_title="Penguin Classifier", layout="wide")
 
 st.title("🐧 Penguin Classifier 🐧")
 df = pd.read_csv("https://raw.githubusercontent.com/dataprofessor/data/master/penguins_cleaned.csv")
-df.sunheader("Случайные 10 строк")
+df.subheader("Случайные 10 строк")
 st.datarfame(df.sample(10), use_container_width = True)
