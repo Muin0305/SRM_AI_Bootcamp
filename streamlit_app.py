@@ -11,7 +11,8 @@ st.set_page_config(page_title="Titanic Survival Predictor", layout="wide")
 st.title("Titanic Survival Predictor")
 
 df = pd.read_csv("https://raw.githubusercontent.com/Muin0305/SRM_AI_Bootcamp/master/Titanic.csv")
-df = df.drop(columns=['PassengerId', 'Name', 'Ticket', 'Cabin'])
+cols_to_drop = ['PassengerId', 'Name', 'Ticket', 'Cabin']
+df = df.drop(columns=[col for col in cols_to_drop if col in df.columns])
 df['Age'] = df['Age'].fillna(df['Age'].median())
 df['Fare'] = df['Fare'].fillna(df['Fare'].median())
 df['Embarked'] = df['Embarked'].replace('unknown', pd.NA)
