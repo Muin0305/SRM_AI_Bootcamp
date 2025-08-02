@@ -10,7 +10,7 @@ import category_encoders as ce
 st.set_page_config(page_title="Titanic Survival Predictor", layout="wide")
 st.title("Titanic Survival Predictor")
 
-df = pd.read_csv("Titanic.csv")
+df = pd.read_csv("https://raw.githubusercontent.com/Muin0305/SRM_AI_Bootcamp/master/Titanic.csv")
 df = df.drop(columns=['PassengerId', 'Name', 'Ticket', 'Cabin'])
 df['Age'] = df['Age'].fillna(df['Age'].median())
 df['Fare'] = df['Fare'].fillna(df['Fare'].median())
