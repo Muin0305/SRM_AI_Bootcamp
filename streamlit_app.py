@@ -1,96 +1,206 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score, StratifiedKFold
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-import category_encoders as ce
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score, precision_recall_curve
+import re
 
-st.set_page_config(page_title="Titanic Survival Predictor", layout="wide")
-st.title("Titanic Survival Predictor")
+# Загрузка данных
+@st.cache_data
+def load_data():
+    df = pd.read_csv('ceasefires_dataset.csv')
+    df = df.drop(columns=[
+        'link_id1', 'link_id2', 'link_id3', 'link_id4', 'link_id5', 'link_id6', 'link_id7', 'link_id8', 
+        'link_id9', 'link_id10', 'link_id11', 'link_id12', 'link_id13', 'link_id14', 'link_id15', 'link_id16',
+        'link_id17', 'link_id18', 'link_id19', 'link_id20', 'link_id21', 'link_id22', 'link_id23', 'link_id24', 
+        'link_id25', 'link_id26', 'link_id27', 'link_id28', 'link_id29', 'link_id30', 'link_id31', 'link_id32', 
+        'link_id33', 'link_id34', 'link_id35', 'evidence_onset', 'evidence_end', 'comment', 'factivia_source', 
+        'cc', 'cf_id', 'uniq_id', 'ucdp_actor_id', 'actor_name', 'ucdp_acd_id', 'ucdp_dyad', 'pax_id', 
+        'cf_dec_yr', 'cf_dec_month', 'cf_dec_day', 'cf_effect_yr', 'cf_effect_month', 'cf_effect_day', 
+        'p_other_comment', 'cf_pp', 'splinter', 'end_yr', 'end_month', 'end_day', 'factivia_page', 'truce', 
+        'recentadditions', 'coder', 'id'
+    ])
+    df['success'] = df['ended'].apply(lambda x: 1 if x in [1, 4] else 0)
+    df = df.drop('ended', axis=1)
+    
+    # Обработка fixed_time
+    def clean_fixed_time(x):
+        if pd.isna(x):
+            return np.nan
+        x_str = str(x).lower()
+        numbers = re.findall(r'\d+', x_str)
+        return float(numbers[0]) if numbers else np.nan
 
-df = pd.read_csv("https://raw.githubusercontent.com/Muin0305/SRM_AI_Bootcamp/master/Titanic.csv")
-cols_to_drop = ['PassengerId', 'Name', 'Ticket', 'Cabin']
-df = df.drop(columns=[col for col in cols_to_drop if col in df.columns])
-df['Age'] = df['Age'].fillna(df['Age'].median())
-df['Fare'] = df['Fare'].fillna(df['Fare'].median())
-df['Embarked'] = df['Embarked'].replace('unknown', pd.NA)
-df['Embarked'] = df['Embarked'].fillna(df['Embarked'].mode()[0])
+    df['fixed_time'] = df['fixed_time'].apply(clean_fixed_time)
+    df['is_fixed_time_unclear'] = df['fixed_time'].isna().astype(int)
 
-st.write("##Датасет")
-st.dataframe(df.sample(10), use_container_width=True)
+    # Обработка mediator_nego и mediator_send
+    categorical_cols = ['location', 'region', 'link', 'side', 'partial', 'written', 'fixed', 'nsa_frac',
+                       'p_humanitarian', 'p_peaceprocess', 'p_holiday', 'p_election', 'p_other', 'p_unclear',
+                       'ceasefire_class', 'timing', 'implement', 'enforcement', 'ddr', 'is_fixed_time_unclear']
+    numeric_cols = ['fixed_time']
 
-st.subheader("Визуализация данных")
-col1, col2 = st.columns(2)
-with col1:
-    st.plotly_chart(px.histogram(df, x="Pclass", color="Sex", barmode="group",
-                                  title="Пассажиры по классам и полу"), use_container_width=True)
-with col2:
-    st.plotly_chart(px.histogram(df, x="Survived", color="Sex", barmode="group",
-                                  title="Выживаемость по полу"), use_container_width=True)
+    if 'mediator_nego' in df.columns:
+        df['mediator_nego_count'] = df['mediator_nego'].apply(lambda x: len(str(x).split(',')) if pd.notna(x) else 0)
+        df['has_mediator_nego'] = df['mediator_nego'].notna().astype(int)
+        categorical_cols.append('has_mediator_nego')
+        numeric_cols.append('mediator_nego_count')
+        df = df.drop('mediator_nego', axis=1)
 
+    if 'mediator_send' in df.columns:
+        df['mediator_send_count'] = df['mediator_send'].apply(lambda x: len(str(x).split(',')) if pd.notna(x) else 0)
+        df['has_mediator_send'] = df['mediator_send'].notna().astype(int)
+        categorical_cols.append('has_mediator_send')
+        numeric_cols.append('mediator_send_count')
+        df = df.drop('mediator_send', axis=1)
 
-fig = px.box(df, x="Survived", y="Age", color="Sex", title="Распределение возраста по полу и выживанию")
-st.plotly_chart(fig, use_container_width=True)
+    return df, categorical_cols, numeric_cols
 
-X = df.drop('Survived', axis=1)
-y = df['Survived']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-encoder = ce.TargetEncoder(cols=['Sex', 'Embarked'])
-X_train_encoded = encoder.fit_transform(X_train, y_train)
-X_test_encoded = encoder.transform(X_test)
+# Моделирование
+@st.cache_resource
+def train_models(df, categorical_cols, numeric_cols):
+    X = df.drop('success', axis=1)
+    y = df['success']
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
+    transformers = []
+    if numeric_cols:
+        transformers.append(('num', Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='median')),
+            ('scaler', StandardScaler())
+        ]), numeric_cols))
+    if categorical_cols:
+        transformers.append(('cat', Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+        ]), categorical_cols))
 
-st.sidebar.header("Настройки модели")
-model_name = st.sidebar.selectbox("Выберите модель", ["Random Forest", "Logistic Regression"])
+    preprocessor = ColumnTransformer(transformers=transformers)
 
-if model_name == "Random Forest":
-    n_estimators = st.sidebar.slider("n_estimators", 10, 200, 100)  
-    max_depth = st.sidebar.slider("max_depth", 2, 20, 5)
-    model = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
-else:
-    model = LogisticRegression(max_iter=1000)
+    models = {
+        'LogisticRegression': {
+            'model': LogisticRegression(class_weight='balanced', penalty='l1', solver='liblinear'),
+            'params': {'classifier__C': [0.1, 1, 10]}
+        },
+        'RandomForest': {
+            'model': RandomForestClassifier(class_weight='balanced', random_state=42, min_samples_split=5),
+            'params': {'classifier__n_estimators': [50, 100], 'classifier__max_depth': [5, 10]}
+        },
+        'GradientBoosting': {
+            'model': GradientBoostingClassifier(random_state=42),
+            'params': {'classifier__n_estimators': [50, 100], 'classifier__learning_rate': [0.01, 0.1], 'classifier__max_depth': [3, 5]}
+        },
+        'XGBoost': {
+            'model': XGBClassifier(eval_metric='logloss', scale_pos_weight=1.2 * (y_train.value_counts()[0] / y_train.value_counts()[1]), max_depth=5, min_child_weight=2, gamma=0.2),
+            'params': {'classifier__n_estimators': [100], 'classifier__learning_rate': [0.01, 0.05]}
+        }
+    }
 
-model.fit(X_train_encoded, y_train)
-train_acc = accuracy_score(y_train, model.predict(X_train_encoded))
-test_acc = accuracy_score(y_test, model.predict(X_test_encoded))
+    results = {}
+    best_model = None
+    best_auc = 0
+    best_params = {}
 
-st.subheader("Результаты модели")
-st.write(f"**Train Accuracy:** {train_acc:.2f}")
-st.write(f"**Test Accuracy:** {test_acc:.2f}")
+    for name, config in models.items():
+        pipeline = Pipeline(steps=[
+            ('preprocessor', preprocessor),
+            ('classifier', config['model'])
+        ])
+        
+        grid = GridSearchCV(pipeline, config['params'], cv=StratifiedKFold(10), scoring='roc_auc', n_jobs=-1)
+        grid.fit(X_train, y_train)
+        
+        y_pred = grid.predict(X_test)
+        y_pred_proba = grid.predict_proba(X_test)[:, 1]
+        auc = roc_auc_score(y_test, y_pred_proba)
+        acc = accuracy_score(y_test, y_pred)
+        
+        precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
+        f1_scores = 2 * precision * recall / (precision + recall + 1e-10)
+        optimal_idx = np.argmax(f1_scores)
+        optimal_threshold = thresholds[optimal_idx]
+        y_pred_adjusted = (y_pred_proba >= optimal_threshold).astype(int)
+        acc_adjusted = accuracy_score(y_test, y_pred_adjusted)
+        
+        results[name] = {
+            'best_params': grid.best_params_,
+            'accuracy': acc,
+            'adjusted_accuracy': acc_adjusted,
+            'roc_auc': auc,
+            'classification_report': classification_report(y_test, y_pred, output_dict=True),
+            'feature_importances': dict(zip(grid.best_estimator_.named_steps['preprocessor'].get_feature_names_out(),
+                                           grid.best_estimator_.named_steps['classifier'].feature_importances_)) if hasattr(grid.best_estimator_.named_steps['classifier'], 'feature_importances_') else None
+        }
+        
+        if auc > best_auc:
+            best_auc = auc
+            best_model = grid.best_estimator_
+            best_params[name] = {k.replace('classifier__', ''): v for k, v in grid.best_params_.items()}
 
-if model_name == "Random Forest":
-    importances = model.feature_importances_
-    feat_df = pd.DataFrame({'Признак': X_train_encoded.columns, 'Значимость': importances})
-    fig_imp = px.bar(feat_df.sort_values('Значимость'), x='Значимость', y='Признак', orientation='h',
-                     title="Важность признаков")
-    st.plotly_chart(fig_imp, use_container_width=True)
+    cv_results = {}
+    for name, config in models.items():
+        pipeline = Pipeline(steps=[
+            ('preprocessor', preprocessor),
+            ('classifier', config['model'].set_params(**best_params.get(name, {})))
+        ])
+        cv_scores = cross_val_score(pipeline, X, y, cv=StratifiedKFold(10), scoring='roc_auc')
+        cv_results[name] = {'mean': cv_scores.mean(), 'std': cv_scores.std()}
 
+    return results, cv_results, best_model
 
-st.sidebar.header("Ввод параметров пассажира")
-sex = st.sidebar.selectbox("Пол", df['Sex'].unique())
-pclass = st.sidebar.selectbox("Класс", sorted(df['Pclass'].unique()))
-age = st.sidebar.slider("Возраст", float(df['Age'].min()), float(df['Age'].max()), float(df['Age'].mean()))
-fare = st.sidebar.slider("Стоимость билета", float(df['Fare'].min()), float(df['Fare'].max()), float(df['Fare'].mean()))
-sibsp = st.sidebar.slider("SibSp (родственники)", 0, int(df['SibSp'].max()), 0)
-parch = st.sidebar.slider("Parch (дети/родители)", 0, int(df['Parch'].max()), 0)
-embarked = st.sidebar.selectbox("Порт посадки", df['Embarked'].unique())
+# Streamlit приложение
+st.title("Анализ успешности перемирий")
 
-user_input = pd.DataFrame([{
-    'Sex': sex,
-    'Pclass': pclass,
-    'Age': age,
-    'Fare': fare,
-    'SibSp': sibsp,
-    'Parch': parch,
-    'Embarked': embarked
-}])
-user_encoded = encoder.transform(user_input)
-user_encoded = user_encoded[X_train_encoded.columns]
+# Загрузка данных
+df, categorical_cols, numeric_cols = load_data()
 
-if st.sidebar.button("Предсказать"):
-    prediction = model.predict(user_encoded)[0]
-    proba = model.predict_proba(user_encoded)[0]
-    st.sidebar.markdown(f"### Вероятность выживания: **{proba[1]*100:.1f}%**")
-    st.sidebar.markdown(f"**Модель прогнозирует:** {' Выжил' if prediction == 1 else 'Не выжил'}")
+# Визуализация корреляционной матрицы
+st.subheader("Матрица корреляций")
+correlation_matrix = df.corr(numeric_only=True)
+fig, ax = plt.subplots(figsize=(12, 10))
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0, square=True, fmt='.2f', linewidths=0.5)
+plt.title('Матрица корреляций', fontsize=16)
+plt.xticks(rotation=45, ha='right')
+plt.tight_layout()
+st.pyplot(fig)
+
+# Обучение моделей
+results, cv_results, best_model = train_models(df, categorical_cols, numeric_cols)
+
+# Вывод результатов
+st.subheader("Результаты моделей")
+for name, result in results.items():
+    st.write(f"**{name}**")
+    st.write(f"Лучшие параметры: {result['best_params']}")
+    st.write(f"Точность: {result['accuracy']:.4f}")
+    st.write(f"Точность (с оптимальным порогом): {result['adjusted_accuracy']:.4f}")
+    st.write(f"ROC AUC: {result['roc_auc']:.4f}")
+    st.write("Отчет по классификации:")
+    st.json(result['classification_report'])
+    
+    if result['feature_importances']:
+        st.write("Важность признаков:")
+        feature_df = pd.DataFrame(list(result['feature_importances'].items()), columns=['Признак', 'Важность']).sort_values('Важность', ascending=False)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.barplot(x='Важность', y='Признак', data=feature_df.head(10))
+        plt.title(f'Топ-10 признаков по важности ({name})')
+        st.pyplot(fig)
+
+# Кросс-валидация
+st.subheader("Кросс-валидация")
+for name, cv in cv_results.items():
+    st.write(f"{name} CV ROC AUC: {cv['mean']:.4f} (+/- {cv['std']:.4f})")
+
+# Лучшая модель
+st.subheader("Лучшая модель")
+cv_scores_best = cross_val_score(best_model, df.drop('success', axis=1), df['success'], cv=StratifiedKFold(10), scoring='roc_auc')
+st.write(f"Лучшая модель CV ROC AUC: {cv_scores_best.mean():.4f} (+/- {cv_scores_best.std():.4f})")
