@@ -1,32 +1,28 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score, StratifiedKFold
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+import plotly.express as px
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, classification_report, roc_auc_score, precision_recall_curve
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, roc_auc_score
 import re
 
 # Set page configuration
-st.set_page_config(page_title="Ceasefire Success Analysis", layout="wide")
+st.set_page_config(page_title="🕊 Ceasefire Success Predictor", layout="wide")
 
 # Title and description
-st.title("Анализ успешности перемирий")
+st.title("🕊 Ceasefire Success Predictor")
 st.markdown("""
-Этот дашборд представляет анализ факторов, влияющих на успешность перемирий в вооруженных конфликтах. 
-Использованы модели машинного обучения для предсказания успеха перемирия на основе характеристик, 
-таких как регион, наличие посредников и тип соглашения.
+Этот дашборд анализирует успешность перемирий в вооруженных конфликтах. 
+Вы можете выбрать модель, настроить параметры и предсказать успех перемирия на основе введенных характеристик.
 """)
 
-# Load data with error handling
+# Load and preprocess data
 @st.cache_data
 def load_data():
     try:
@@ -57,13 +53,12 @@ def load_data():
         df['fixed_time'] = df['fixed_time'].apply(clean_fixed_time)
         df['is_fixed_time_unclear'] = df['fixed_time'].isna().astype(int)
 
-        # Define categorical and numeric columns
+        # Process mediator columns
         categorical_cols = ['location', 'region', 'link', 'side', 'partial', 'written', 'fixed', 'nsa_frac',
                            'p_humanitarian', 'p_peaceprocess', 'p_holiday', 'p_election', 'p_other', 'p_unclear',
                            'ceasefire_class', 'timing', 'implement', 'enforcement', 'ddr', 'is_fixed_time_unclear']
         numeric_cols = ['fixed_time']
 
-        # Process mediator columns
         if 'mediator_nego' in df.columns:
             df['mediator_nego_count'] = df['mediator_nego'].apply(lambda x: len(str(x).split(',')) if pd.notna(x) else 0)
             df['has_mediator_nego'] = df['mediator_nego'].notna().astype(int)
@@ -83,179 +78,133 @@ def load_data():
         st.error(f"Ошибка при загрузке данных: {str(e)}")
         return None, None, None
 
-# Train models
-@st.cache_resource
-def train_models(df, categorical_cols, numeric_cols):
-    try:
-        X = df.drop('success', axis=1)
-        y = df['success']
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-
-        transformers = []
-        if numeric_cols:
-            transformers.append(('num', Pipeline(steps=[
-                ('imputer', SimpleImputer(strategy='median')),
-                ('scaler', StandardScaler())
-            ]), numeric_cols))
-        if categorical_cols:
-            transformers.append(('cat', Pipeline(steps=[
-                ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
-                ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-            ]), categorical_cols))
-
-        preprocessor = ColumnTransformer(transformers=transformers)
-
-        models = {
-            'LogisticRegression': {
-                'model': LogisticRegression(class_weight='balanced', penalty='l1', solver='liblinear'),
-                'params': {'classifier__C': [0.1, 1, 10]}
-            },
-            'RandomForest': {
-                'model': RandomForestClassifier(class_weight='balanced', random_state=42, min_samples_split=5),
-                'params': {'classifier__n_estimators': [50, 100], 'classifier__max_depth': [5, 10]}
-            },
-            'GradientBoosting': {
-                'model': GradientBoostingClassifier(random_state=42),
-                'params': {'classifier__n_estimators': [50, 100], 'classifier__learning_rate': [0.01, 0.1], 'classifier__max_depth': [3, 5]}
-            },
-            'XGBoost': {
-                'model': XGBClassifier(eval_metric='logloss', scale_pos_weight=1.2 * (y_train.value_counts()[0] / y_train.value_counts()[1]), max_depth=5, min_child_weight=2, gamma=0.2),
-                'params': {'classifier__n_estimators': [100], 'classifier__learning_rate': [0.01, 0.05]}
-            }
-        }
-
-        results = {}
-        best_model = None
-        best_auc = 0
-        best_params = {}
-
-        for name, config in models.items():
-            pipeline = Pipeline(steps=[
-                ('preprocessor', preprocessor),
-                ('classifier', config['model'])
-            ])
-            
-            grid = GridSearchCV(pipeline, config['params'], cv=StratifiedKFold(10), scoring='roc_auc', n_jobs=-1)
-            grid.fit(X_train, y_train)
-            
-            y_pred = grid.predict(X_test)
-            y_pred_proba = grid.predict_proba(X_test)[:, 1]
-            auc = roc_auc_score(y_test, y_pred_proba)
-            acc = accuracy_score(y_test, y_pred)
-            
-            precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
-            f1_scores = 2 * precision * recall / (precision + recall + 1e-10)
-            optimal_idx = np.argmax(f1_scores)
-            optimal_threshold = thresholds[optimal_idx]
-            y_pred_adjusted = (y_pred_proba >= optimal_threshold).astype(int)
-            acc_adjusted = accuracy_score(y_test, y_pred_adjusted)
-            
-            results[name] = {
-                'best_params': grid.best_params_,
-                'accuracy': acc,
-                'adjusted_accuracy': acc_adjusted,
-                'roc_auc': auc,
-                'classification_report': classification_report(y_test, y_pred, output_dict=True),
-                'feature_importances': dict(zip(grid.best_estimator_.named_steps['preprocessor'].get_feature_names_out(),
-                                               grid.best_estimator_.named_steps['classifier'].feature_importances_)) if hasattr(grid.best_estimator_.named_steps['classifier'], 'feature_importances_') else None
-            }
-            
-            if auc > best_auc:
-                best_auc = auc
-                best_model = grid.best_estimator_
-                best_params[name] = {k.replace('classifier__', ''): v for k, v in grid.best_params_.items()}
-
-        cv_results = {}
-        for name, config in models.items():
-            pipeline = Pipeline(steps=[
-                ('preprocessor', preprocessor),
-                ('classifier', config['model'].set_params(**best_params.get(name, {})))
-            ])
-            cv_scores = cross_val_score(pipeline, X, y, cv=StratifiedKFold(10), scoring='roc_auc')
-            cv_results[name] = {'mean': cv_scores.mean(), 'std': cv_scores.std()}
-
-        return results, cv_results, best_model
-    except Exception as e:
-        st.error(f"Ошибка при обучении моделей: {str(e)}")
-        return None, None, None
-
 # Load data
 df, categorical_cols, numeric_cols = load_data()
 if df is None:
     st.stop()
 
-# Sidebar for navigation
-st.sidebar.title("Навигация")
-page = st.sidebar.radio("Выберите раздел:", ["Обзор данных", "Матрица корреляций", "Результаты моделей", "Кросс-валидация", "Лучшая модель"])
+# Display dataset
+st.write("## 🧾 Датасет")
+st.dataframe(df.sample(10), use_container_width=True)
 
-# Data Overview
-if page == "Обзор данных":
-    st.subheader("Обзор данных")
-    st.write("Первые 10 строк датасета:")
-    st.dataframe(df.head(10))
-    st.write("Статистика по данным:")
-    st.dataframe(df.describe())
+# Data visualizations
+st.subheader("📊 Визуализация данных")
+col1, col2 = st.columns(2)
+with col1:
+    fig_region = px.histogram(df, x="region", color="success", barmode="group",
+                              title="Перемирия по регионам и успешности")
+    st.plotly_chart(fig_region, use_container_width=True)
+with col2:
+    fig_written = px.histogram(df, x="written", color="success", barmode="group",
+                               title="Успешность перемирий по наличию письменного соглашения")
+    st.plotly_chart(fig_written, use_container_width=True)
 
-# Correlation Matrix
-elif page == "Матрица корреляций":
-    st.subheader("Матрица корреляций")
-    correlation_matrix = df.corr(numeric_only=True)
-    fig, ax = plt.subplots(figsize=(12, 10))
-    sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0, square=True, fmt='.2f', linewidths=0.5)
-    plt.title('Матрица корреляций', fontsize=16)
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-    st.pyplot(fig)
+fig_box = px.box(df, x="success", y="fixed_time", color="is_fixed_time_unclear",
+                 title="Распределение длительности перемирия по успешности")
+st.plotly_chart(fig_box, use_container_width=True)
 
-# Model Results
-elif page == "Результаты моделей":
-    st.subheader("Результаты моделей")
-    results, cv_results, best_model = train_models(df, categorical_cols, numeric_cols)
-    if results is None:
-        st.stop()
+# Preprocessing pipeline
+transformers = []
+if numeric_cols:
+    transformers.append(('num', Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler())
+    ]), numeric_cols))
+if categorical_cols:
+    transformers.append(('cat', Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ]), categorical_cols))
 
-    for name, result in results.items():
-        st.write(f"**{name}**")
-        st.write(f"Лучшие параметры: {result['best_params']}")
-        st.write(f"Точность: {result['accuracy']:.4f}")
-        st.write(f"Точность (с оптимальным порогом): {result['adjusted_accuracy']:.4f}")
-        st.write(f"ROC AUC: {result['roc_auc']:.4f}")
-        st.write("Отчет по классификации:")
-        st.json(result['classification_report'])
-        
-        if result['feature_importances']:
-            st.write("Важность признаков:")
-            feature_df = pd.DataFrame(list(result['feature_importances'].items()), columns=['Признак', 'Важность']).sort_values('Важность', ascending=False)
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.barplot(x='Важность', y='Признак', data=feature_df.head(10), palette='viridis')
-            plt.title(f'Топ-10 признаков по важности ({name})')
-            st.pyplot(fig)
+preprocessor = ColumnTransformer(transformers=transformers)
 
-# Cross-Validation
-elif page == "Кросс-валидация":
-    st.subheader("Кросс-валидация")
-    results, cv_results, best_model = train_models(df, categorical_cols, numeric_cols)
-    if cv_results is None:
-        st.stop()
+# Split data
+X = df.drop('success', axis=1)
+y = df['success']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+X_train_processed = preprocessor.fit_transform(X_train)
+X_test_processed = preprocessor.transform(X_test)
+feature_names = preprocessor.get_feature_names_out()
 
-    for name, cv in cv_results.items():
-        st.write(f"{name} CV ROC AUC: {cv['mean']:.4f} (+/- {cv['std']:.4f})")
+# Sidebar for model settings
+st.sidebar.header("⚙️ Настройки модели")
+model_name = st.sidebar.selectbox("Выберите модель", ["Logistic Regression", "Random Forest"])
 
-# Best Model
-elif page == "Лучшая модель":
-    st.subheader("Лучшая модель")
-    results, cv_results, best_model = train_models(df, categorical_cols, numeric_cols)
-    if best_model is None:
-        st.stop()
+if model_name == "Random Forest":
+    n_estimators = st.sidebar.slider("n_estimators", 10, 200, 100)
+    max_depth = st.sidebar.slider("max_depth", 2, 20, 5)
+    model = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, class_weight='balanced', random_state=42)
+else:
+    model = LogisticRegression(class_weight='balanced', penalty='l1', solver='liblinear', max_iter=1000)
 
-    cv_scores_best = cross_val_score(best_model, df.drop('success', axis=1), df['success'], cv=StratifiedKFold(10), scoring='roc_auc')
-    st.write(f"Лучшая модель CV ROC AUC: {cv_scores_best.mean():.4f} (+/- {cv_scores_best.std():.4f})")
+# Train model
+model.fit(X_train_processed, y_train)
+train_acc = accuracy_score(y_train, model.predict(X_train_processed))
+test_acc = accuracy_score(y_test, model.predict(X_test_processed))
+train_roc_auc = roc_auc_score(y_train, model.predict_proba(X_train_processed)[:, 1])
+test_roc_auc = roc_auc_score(y_test, model.predict_proba(X_test_processed)[:, 1])
 
-    # Plot ROC AUC distribution
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sns.histplot(cv_scores_best, kde=True, color='blue')
-    plt.title('Распределение ROC AUC для лучшей модели (10-fold CV)')
-    plt.xlabel('ROC AUC')
-    plt.ylabel('Частота')
-    st.pyplot(fig)
+# Display model results
+st.subheader("📈 Результаты модели")
+st.write(f"**Точность на обучающей выборке:** {train_acc:.2f}")
+st.write(f"**Точность на тестовой выборке:** {test_acc:.2f}")
+st.write(f"**ROC AUC на обучающей выборке:** {train_roc_auc:.2f}")
+st.write(f"**ROC AUC на тестовой выборке:** {test_roc_auc:.2f}")
 
+# Feature importance for Random Forest
+if model_name == "Random Forest":
+    importances = model.feature_importances_
+    feat_df = pd.DataFrame({'Признак': feature_names, 'Значимость': importances})
+    fig_imp = px.bar(feat_df.sort_values('Значимость', ascending=False).head(10), x='Значимость', y='Признак', orientation='h',
+                     title="📊 Важность признаков")
+    st.plotly_chart(fig_imp, use_container_width=True)
+
+# Sidebar for user input
+st.sidebar.header("🔍 Ввод параметров перемирия")
+region = st.sidebar.selectbox("Регион", df['region'].unique())
+written = st.sidebar.selectbox("Письменное соглашение", df['written'].unique())
+fixed_time = st.sidebar.slider("Длительность перемирия (дни)", 0.0, float(df['fixed_time'].max()), float(df['fixed_time'].median()))
+is_fixed_time_unclear = st.sidebar.selectbox("Неопределенность длительности", [0, 1])
+side = st.sidebar.selectbox("Сторона", df['side'].unique())
+partial = st.sidebar.selectbox("Частичное перемирие", df['partial'].unique())
+ceasefire_class = st.sidebar.selectbox("Класс перемирия", df['ceasefire_class'].unique())
+
+# Create user input DataFrame
+user_input = pd.DataFrame([{
+    'region': region,
+    'written': written,
+    'fixed_time': fixed_time,
+    'is_fixed_time_unclear': is_fixed_time_unclear,
+    'side': side,
+    'partial': partial,
+    'ceasefire_class': ceasefire_class,
+    'location': df['location'].mode()[0],  # Default values for other columns
+    'link': df['link'].mode()[0],
+    'fixed': df['fixed'].mode()[0],
+    'nsa_frac': df['nsa_frac'].mode()[0],
+    'p_humanitarian': df['p_humanitarian'].mode()[0],
+    'p_peaceprocess': df['p_peaceprocess'].mode()[0],
+    'p_holiday': df['p_holiday'].mode()[0],
+    'p_election': df['p_election'].mode()[0],
+    'p_other': df['p_other'].mode()[0],
+    'p_unclear': df['p_unclear'].mode()[0],
+    'timing': df['timing'].mode()[0],
+    'implement': df['implement'].mode()[0],
+    'enforcement': df['enforcement'].mode()[0],
+    'ddr': df['ddr'].mode()[0]
+}])
+
+if 'mediator_nego_count' in df.columns:
+    user_input['mediator_nego_count'] = df['mediator_nego_count'].median()
+    user_input['has_mediator_nego'] = df['has_mediator_nego'].mode()[0]
+if 'mediator_send_count' in df.columns:
+    user_input['mediator_send_count'] = df['mediator_send_count'].median()
+    user_input['has_mediator_send'] = df['has_mediator_send'].mode()[0]
+
+# Predict
+if st.sidebar.button("🔮 Предсказать"):
+    user_processed = preprocessor.transform(user_input)
+    prediction = model.predict(user_processed)[0]
+    proba = model.predict_proba(user_processed)[0]
+    st.sidebar.markdown(f"### 🧠 Вероятность успеха перемирия: **{proba[1]*100:.1f}%**")
+    st.sidebar.markdown(f"**Модель прогнозирует:** {'✅ Успешно' if prediction == 1 else '❌ Неуспешно'}")
