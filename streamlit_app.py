@@ -1,4 +1,4 @@
-```python
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -258,4 +258,4 @@ elif page == "Лучшая модель":
     plt.xlabel('ROC AUC')
     plt.ylabel('Частота')
     st.pyplot(fig)
-```
+
