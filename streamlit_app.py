@@ -11,6 +11,11 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score
 import re
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Set page configuration
 st.set_page_config(page_title="🕊 Ceasefire Success Predictor", layout="wide")
@@ -26,7 +31,10 @@ st.markdown("""
 @st.cache_data
 def load_data():
     try:
+        logger.info("Loading ceasefire dataset...")
         df = pd.read_csv('ceasefires_dataset.csv')
+        logger.info(f"Dataset loaded with shape: {df.shape}")
+        
         columns_to_drop = [
             'link_id1', 'link_id2', 'link_id3', 'link_id4', 'link_id5', 'link_id6', 'link_id7', 'link_id8',
             'link_id9', 'link_id10', 'link_id11', 'link_id12', 'link_id13', 'link_id14', 'link_id15', 'link_id16',
@@ -73,8 +81,10 @@ def load_data():
             numeric_cols.append('mediator_send_count')
             df = df.drop('mediator_send', axis=1)
 
+        logger.info("Data preprocessing completed")
         return df, categorical_cols, numeric_cols
     except Exception as e:
+        logger.error(f"Error loading data: {str(e)}")
         st.error(f"Ошибка при загрузке данных: {str(e)}")
         return None, None, None
 
@@ -104,27 +114,32 @@ fig_box = px.box(df, x="success", y="fixed_time", color="is_fixed_time_unclear",
 st.plotly_chart(fig_box, use_container_width=True)
 
 # Preprocessing pipeline
-transformers = []
-if numeric_cols:
-    transformers.append(('num', Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler())
-    ]), numeric_cols))
-if categorical_cols:
-    transformers.append(('cat', Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
-        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-    ]), categorical_cols))
+try:
+    transformers = []
+    if numeric_cols:
+        transformers.append(('num', Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='median')),
+            ('scaler', StandardScaler())
+        ]), numeric_cols))
+    if categorical_cols:
+        transformers.append(('cat', Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+        ]), categorical_cols))
 
-preprocessor = ColumnTransformer(transformers=transformers)
+    preprocessor = ColumnTransformer(transformers=transformers)
 
-# Split data
-X = df.drop('success', axis=1)
-y = df['success']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-X_train_processed = preprocessor.fit_transform(X_train)
-X_test_processed = preprocessor.transform(X_test)
-feature_names = preprocessor.get_feature_names_out()
+    # Split data
+    X = df.drop('success', axis=1)
+    y = df['success']
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    X_train_processed = preprocessor.fit_transform(X_train)
+    X_test_processed = preprocessor.transform(X_test)
+    feature_names = preprocessor.get_feature_names_out()
+except Exception as e:
+    logger.error(f"Error in preprocessing: {str(e)}")
+    st.error(f"Ошибка в предобработке данных: {str(e)}")
+    st.stop()
 
 # Sidebar for model settings
 st.sidebar.header("⚙️ Настройки модели")
@@ -138,11 +153,18 @@ else:
     model = LogisticRegression(class_weight='balanced', penalty='l1', solver='liblinear', max_iter=1000)
 
 # Train model
-model.fit(X_train_processed, y_train)
-train_acc = accuracy_score(y_train, model.predict(X_train_processed))
-test_acc = accuracy_score(y_test, model.predict(X_test_processed))
-train_roc_auc = roc_auc_score(y_train, model.predict_proba(X_train_processed)[:, 1])
-test_roc_auc = roc_auc_score(y_test, model.predict_proba(X_test_processed)[:, 1])
+try:
+    logger.info("Training model...")
+    model.fit(X_train_processed, y_train)
+    train_acc = accuracy_score(y_train, model.predict(X_train_processed))
+    test_acc = accuracy_score(y_test, model.predict(X_test_processed))
+    train_roc_auc = roc_auc_score(y_train, model.predict_proba(X_train_processed)[:, 1])
+    test_roc_auc = roc_auc_score(y_test, model.predict_proba(X_test_processed)[:, 1])
+    logger.info("Model training completed")
+except Exception as e:
+    logger.error(f"Error training model: {str(e)}")
+    st.error(f"Ошибка при обучении модели: {str(e)}")
+    st.stop()
 
 # Display model results
 st.subheader("📈 Результаты модели")
@@ -153,11 +175,15 @@ st.write(f"**ROC AUC на тестовой выборке:** {test_roc_auc:.2f}"
 
 # Feature importance for Random Forest
 if model_name == "Random Forest":
-    importances = model.feature_importances_
-    feat_df = pd.DataFrame({'Признак': feature_names, 'Значимость': importances})
-    fig_imp = px.bar(feat_df.sort_values('Значимость', ascending=False).head(10), x='Значимость', y='Признак', orientation='h',
-                     title="📊 Важность признаков")
-    st.plotly_chart(fig_imp, use_container_width=True)
+    try:
+        importances = model.feature_importances_
+        feat_df = pd.DataFrame({'Признак': feature_names, 'Значимость': importances})
+        fig_imp = px.bar(feat_df.sort_values('Значимость', ascending=False).head(10), x='Значимость', y='Признак', orientation='h',
+                         title="📊 Важность признаков")
+        st.plotly_chart(fig_imp, use_container_width=True)
+    except Exception as e:
+        logger.error(f"Error displaying feature importance: {str(e)}")
+        st.error(f"Ошибка при отображении важности признаков: {str(e)}")
 
 # Sidebar for user input
 st.sidebar.header("🔍 Ввод параметров перемирия")
@@ -170,41 +196,50 @@ partial = st.sidebar.selectbox("Частичное перемирие", df['part
 ceasefire_class = st.sidebar.selectbox("Класс перемирия", df['ceasefire_class'].unique())
 
 # Create user input DataFrame
-user_input = pd.DataFrame([{
-    'region': region,
-    'written': written,
-    'fixed_time': fixed_time,
-    'is_fixed_time_unclear': is_fixed_time_unclear,
-    'side': side,
-    'partial': partial,
-    'ceasefire_class': ceasefire_class,
-    'location': df['location'].mode()[0],  # Default values for other columns
-    'link': df['link'].mode()[0],
-    'fixed': df['fixed'].mode()[0],
-    'nsa_frac': df['nsa_frac'].mode()[0],
-    'p_humanitarian': df['p_humanitarian'].mode()[0],
-    'p_peaceprocess': df['p_peaceprocess'].mode()[0],
-    'p_holiday': df['p_holiday'].mode()[0],
-    'p_election': df['p_election'].mode()[0],
-    'p_other': df['p_other'].mode()[0],
-    'p_unclear': df['p_unclear'].mode()[0],
-    'timing': df['timing'].mode()[0],
-    'implement': df['implement'].mode()[0],
-    'enforcement': df['enforcement'].mode()[0],
-    'ddr': df['ddr'].mode()[0]
-}])
+try:
+    user_input = pd.DataFrame([{
+        'region': region,
+        'written': written,
+        'fixed_time': fixed_time,
+        'is_fixed_time_unclear': is_fixed_time_unclear,
+        'side': side,
+        'partial': partial,
+        'ceasefire_class': ceasefire_class,
+        'location': df['location'].mode()[0],
+        'link': df['link'].mode()[0],
+        'fixed': df['fixed'].mode()[0],
+        'nsa_frac': df['nsa_frac'].mode()[0],
+        'p_humanitarian': df['p_humanitarian'].mode()[0],
+        'p_peaceprocess': df['p_peaceprocess'].mode()[0],
+        'p_holiday': df['p_holiday'].mode()[0],
+        'p_election': df['p_election'].mode()[0],
+        'p_other': df['p_other'].mode()[0],
+        'p_unclear': df['p_unclear'].mode()[0],
+        'timing': df['timing'].mode()[0],
+        'implement': df['implement'].mode()[0],
+        'enforcement': df['enforcement'].mode()[0],
+        'ddr': df['ddr'].mode()[0]
+    }])
 
-if 'mediator_nego_count' in df.columns:
-    user_input['mediator_nego_count'] = df['mediator_nego_count'].median()
-    user_input['has_mediator_nego'] = df['has_mediator_nego'].mode()[0]
-if 'mediator_send_count' in df.columns:
-    user_input['mediator_send_count'] = df['mediator_send_count'].median()
-    user_input['has_mediator_send'] = df['has_mediator_send'].mode()[0]
+    if 'mediator_nego_count' in df.columns:
+        user_input['mediator_nego_count'] = df['mediator_nego_count'].median()
+        user_input['has_mediator_nego'] = df['has_mediator_nego'].mode()[0]
+    if 'mediator_send_count' in df.columns:
+        user_input['mediator_send_count'] = df['mediator_send_count'].median()
+        user_input['has_mediator_send'] = df['has_mediator_send'].mode()[0]
+except Exception as e:
+    logger.error(f"Error creating user input: {str(e)}")
+    st.error(f"Ошибка при создании пользовательского ввода: {str(e)}")
+    st.stop()
 
 # Predict
 if st.sidebar.button("🔮 Предсказать"):
-    user_processed = preprocessor.transform(user_input)
-    prediction = model.predict(user_processed)[0]
-    proba = model.predict_proba(user_processed)[0]
-    st.sidebar.markdown(f"### 🧠 Вероятность успеха перемирия: **{proba[1]*100:.1f}%**")
-    st.sidebar.markdown(f"**Модель прогнозирует:** {'✅ Успешно' if prediction == 1 else '❌ Неуспешно'}")
+    try:
+        user_processed = preprocessor.transform(user_input)
+        prediction = model.predict(user_processed)[0]
+        proba = model.predict_proba(user_processed)[0]
+        st.sidebar.markdown(f"### 🧠 Вероятность успеха перемирия: **{proba[1]*100:.1f}%**")
+        st.sidebar.markdown(f"**Модель прогнозирует:** {'✅ Успешно' if prediction == 1 else '❌ Неуспешно'}")
+    except Exception as e:
+        logger.error(f"Error during prediction: {str(e)}")
+        st.error(f"Ошибка при предсказании: {str(e)}")
